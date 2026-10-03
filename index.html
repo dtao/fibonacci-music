@@ -1,0 +1,577 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="A generative Cmaj7 arpeggio whose rhythm follows the Fibonacci sequence, traced along a Fibonacci spiral. Tap to seed more layers.">
+<title>Fibonacci Cascade</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #05070d;
+    --fg: #dfe6f3;
+    --muted: rgba(223, 230, 243, 0.55);
+    --panel: rgba(10, 14, 24, 0.72);
+    --line: rgba(223, 230, 243, 0.14);
+    --accent: #8fb8ff;
+  }
+  :root[data-theme="light"] {
+    /* The piece is designed for a dark canvas; light theme only lifts the chrome. */
+    --panel: rgba(10, 14, 24, 0.82);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--fg);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #hud {
+    position: fixed; left: 16px; top: max(16px, env(safe-area-inset-top));
+    pointer-events: none;
+  }
+  #hud h1 {
+    margin: 0; font-size: 13px; font-weight: 600;
+    letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85;
+  }
+  #hud p { margin: 6px 0 0; font-size: 12px; color: var(--muted); max-width: 46ch; line-height: 1.4; }
+  #hud .note {
+    margin-top: 10px; font-variant-numeric: tabular-nums;
+    font-size: 12px; color: var(--muted);
+  }
+  #hud .note b { color: var(--fg); font-weight: 600; }
+
+  #panel {
+    position: fixed; left: 16px; right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    font-size: 12px;
+  }
+  #panel .box {
+    display: flex; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border-radius: 999px; padding: 8px 14px;
+  }
+  #panel label { color: var(--muted); white-space: nowrap; }
+  #panel output { min-width: 5.5ch; font-variant-numeric: tabular-nums; }
+  #panel input[type=range] { width: 120px; accent-color: var(--accent); }
+  #panel button {
+    all: unset; cursor: pointer; padding: 8px 14px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  #panel button:hover { border-color: rgba(223,230,243,0.35); }
+  #panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  #overlay {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: radial-gradient(ellipse at center, rgba(20, 30, 54, 0.85), rgba(5, 7, 13, 0.97));
+    cursor: pointer; text-align: center; padding: 24px;
+  }
+  #overlay .card { max-width: 42ch; }
+  #overlay h2 { margin: 0 0 10px; font-size: 22px; font-weight: 600; letter-spacing: 0.02em; }
+  #overlay p { margin: 0 0 6px; color: var(--muted); line-height: 1.5; font-size: 14px; }
+  #overlay .cta {
+    margin-top: 22px; display: inline-block; padding: 10px 20px; border-radius: 999px;
+    border: 1px solid rgba(143, 184, 255, 0.5); color: var(--accent); font-size: 14px;
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: .65 } 50% { opacity: 1 } }
+  #overlay.hidden { display: none; }
+  @media (prefers-reduced-motion: reduce) { #overlay .cta { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="stage" aria-label="Fibonacci spiral visualization"></canvas>
+
+<div id="hud" aria-live="polite">
+  <h1>Fibonacci Cascade</h1>
+  <p>C · E · G · B climbing through four octaves. Each note lasts a Fibonacci number of pulses: 2, 3, 5, 8, 13 … and fades as it rises.</p>
+  <p>Tap anywhere to seed a new layer. Taps snap to the eighth-note grid.</p>
+  <div class="note"><span id="layers">0 layers</span><span id="last"></span></div>
+</div>
+
+<div id="panel">
+  <div class="box">
+    <label for="pulse">pulse</label>
+    <input id="pulse" type="range" min="28" max="110" step="1" value="50" aria-label="Pulse length in milliseconds">
+    <output id="pulseOut" for="pulse">50 ms</output>
+  </div>
+  <button id="reset" type="button">Reset</button>
+</div>
+
+<div id="overlay">
+  <div class="card">
+    <h2>Fibonacci Cascade</h2>
+    <p>A Cmaj7 arpeggio whose rhythm grows along the Fibonacci sequence, traced as a spiral of golden squares.</p>
+    <p>Sound on. Then tap the screen to layer new spirals.</p>
+    <span class="cta">Tap to begin</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------- Constants ----------
+  const FIB = [0, 1];
+  for (let i = 2; i < 48; i++) FIB[i] = FIB[i - 1] + FIB[i - 2];
+
+  const NOTE_COUNT = 16;                          // four octaves of C E G B
+  const SEED_SQUARES = 2;                         // the two unit squares at the heart of the spiral
+  const SQUARE_COUNT = NOTE_COUNT + SEED_SQUARES + 2; // a couple extra for camera look-ahead
+  const BASE_FREQ = 130.8128;                     // C3
+  const RATIOS = [1, 2 ** (4 / 12), 2 ** (7 / 12), 2 ** (11 / 12)];
+  const NAMES = ['C', 'E', 'G', 'B'];
+  const PEAK = 0.3;                               // gain of the very first note
+  const GAIN_DECAY = 0.78;                        // per-note gain multiplier (≈ -8.6 dB per octave)
+  const GOLDEN_ANGLE = 137.50776;
+
+  // Note i lasts FIB[i + 3] pulses: 2, 3, 5, 8, 13 ...
+  const DUR = Array.from({ length: NOTE_COUNT }, (_, i) => FIB[i + 3]);
+  const CUM = [0];
+  for (let i = 0; i < NOTE_COUNT; i++) CUM[i + 1] = CUM[i] + DUR[i];
+
+  // ---------- Spiral geometry (math coordinates, y up) ----------
+  // Square n has side FIB[n]. Squares are laid down, right, up, left, ... and each one
+  // holds a quarter arc of radius FIB[n] whose arc length is proportional to the note it
+  // represents, so a note's glow travels the spiral at constant speed.
+  const SQ = (() => {
+    const out = [];
+    let minX = 0, maxX = 1, minY = 0, maxY = 1;
+    for (let n = 1; n <= SQUARE_COUNT; n++) {
+      const s = FIB[n], dir = (n - 1) % 4;
+      let x0, y0, x1, y1;
+      if (n === 1)        { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
+      else if (dir === 0) { y1 = minY; y0 = minY - s; x0 = minX; x1 = minX + s; } // down
+      else if (dir === 1) { x0 = maxX; x1 = maxX + s; y0 = minY; y1 = minY + s; } // right
+      else if (dir === 2) { y0 = maxY; y1 = maxY + s; x0 = minX; x1 = minX + s; } // up
+      else                { x1 = minX; x0 = minX - s; y0 = minY; y1 = minY + s; } // left
+      minX = Math.min(minX, x0); maxX = Math.max(maxX, x1);
+      minY = Math.min(minY, y0); maxY = Math.max(maxY, y1);
+      const [cx, cy] = dir === 0 ? [x1, y1] : dir === 1 ? [x0, y1] : dir === 2 ? [x0, y0] : [x1, y0];
+      const a0 = dir === 0 ? Math.PI : dir === 1 ? -Math.PI / 2 : dir === 2 ? 0 : Math.PI / 2;
+      out.push({ n, s, x0, y0, x1, y1, cx, cy, a0, box: { minX, maxX, minY, maxY } });
+    }
+    return out;
+  })();
+  const squareOf = n => SQ[Math.min(Math.max(n, 1), SQUARE_COUNT) - 1];
+
+  // ---------- DOM ----------
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const layersEl = document.getElementById('layers');
+  const lastEl = document.getElementById('last');
+  const pulseEl = document.getElementById('pulse');
+  const pulseOut = document.getElementById('pulseOut');
+  const resetBtn = document.getElementById('reset');
+
+  let W = 0, H = 0, dpr = 1, bgGradient = null;
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    bgGradient = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.hypot(W, H) / 2);
+    bgGradient.addColorStop(0, '#0b1020');
+    bgGradient.addColorStop(1, '#04060b');
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Audio ----------
+  let AC = null, master = null, reverbSend = null;
+
+  function makeImpulse(seconds, decay) {
+    const rate = AC.sampleRate, len = Math.floor(rate * seconds);
+    const buf = AC.createBuffer(2, len, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = buf.getChannelData(ch);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+    return buf;
+  }
+
+  function initAudio() {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    const comp = AC.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.knee.value = 18; comp.ratio.value = 4;
+    comp.attack.value = 0.004; comp.release.value = 0.2;
+    comp.connect(AC.destination);
+
+    master = AC.createGain(); master.gain.value = 0.9;
+    master.connect(comp);
+
+    const reverb = AC.createConvolver();
+    reverb.buffer = makeImpulse(3.2, 2.6);
+    reverbSend = AC.createGain(); reverbSend.gain.value = 0.4;
+    reverbSend.connect(reverb).connect(comp);
+  }
+
+  function noteFreq(i) { return BASE_FREQ * 2 ** Math.floor(i / 4) * RATIOS[i % 4]; }
+  function noteName(i) { return NAMES[i % 4] + (3 + Math.floor(i / 4)); }
+
+  function playNote(voice, i, t, dur) {
+    const f = noteFreq(i);
+    const peak = PEAK * GAIN_DECAY ** i;
+    const tau = Math.min(Math.max(dur * 0.8, 0.12), 8);   // decay time constant: bell-like ring
+    const ring = dur + Math.min(3 * tau, 2.5);            // let short notes overlap into a chord
+
+    const env = AC.createGain();
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + 0.012);
+    env.gain.setTargetAtTime(0, t + 0.012, tau);
+    env.gain.setTargetAtTime(0, t + ring - 0.08, 0.015);  // soft release before stop
+
+    const o1 = AC.createOscillator(); o1.type = 'sine'; o1.frequency.value = f;
+    const o2 = AC.createOscillator(); o2.type = 'triangle'; o2.frequency.value = f; o2.detune.value = 3;
+    const g2 = AC.createGain(); g2.gain.value = 0.22;
+    const lp = AC.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.value = Math.min(f * 4, 10000); lp.Q.value = 0.4;
+
+    o1.connect(env);
+    o2.connect(g2).connect(lp).connect(env);
+    env.connect(voice.pan);
+
+    o1.start(t); o2.start(t);
+    o1.stop(t + ring); o2.stop(t + ring);
+    voice.sources.push(o1, o2);
+    o1.onended = () => {
+      voice.sources = voice.sources.filter(s => s !== o1 && s !== o2);
+      env.disconnect(); lp.disconnect(); g2.disconnect();
+    };
+    lastEl.textContent = ` · ${noteName(i)} · ${DUR[i]} pulses`;
+  }
+
+  // ---------- Voices ----------
+  class Voice {
+    constructor(o) {
+      Object.assign(this, o);            // start, unit, ox, oy, rot, scale, hue, panValue, born
+      this.next = 0;
+      this.sources = [];
+      this.notes = DUR.map((d, i) => ({ start: this.start + CUM[i] * this.unit, dur: d * this.unit }));
+      this.end = this.notes[NOTE_COUNT - 1].start + this.notes[NOTE_COUNT - 1].dur;
+      this.pan = AC.createStereoPanner ? AC.createStereoPanner() : AC.createGain();
+      if (this.pan.pan) this.pan.pan.value = this.panValue;
+      this.pan.connect(master);
+      this.pan.connect(reverbSend);
+      this.cos = Math.cos(this.rot); this.sin = Math.sin(this.rot);
+    }
+    // Which square is live right now, and how far through it we are.
+    progress(now) {
+      if (now < this.start) return { n: SEED_SQUARES, f: 0, i: -1, done: false };
+      let i = 0;
+      while (i + 1 < NOTE_COUNT && this.notes[i + 1].start <= now) i++;
+      const note = this.notes[i];
+      const f = Math.min((now - note.start) / note.dur, 1);
+      const done = i === NOTE_COUNT - 1 && f >= 1;
+      return { n: i + SEED_SQUARES + 1, f, i, done };
+    }
+    lit(i, now) {
+      const n = this.notes[i];
+      if (now < n.start) return 0;
+      const end = n.start + n.dur;
+      if (now < end) return 1;
+      return Math.exp(-(now - end) / (0.4 + n.dur * 0.6));
+    }
+    toWorld(x, y) {
+      return [this.ox + this.scale * (x * this.cos - y * this.sin),
+              this.oy + this.scale * (x * this.sin + y * this.cos)];
+    }
+    finished(now) { return now > this.end + 6; }
+    kill() {
+      for (const s of this.sources) { try { s.stop(); } catch (e) { /* already stopped */ } }
+      this.sources = [];
+      try { this.pan.disconnect(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  const voices = [];
+  const ripples = [];
+  let unitMs = +pulseEl.value;
+  let gridOrigin = 0;
+  let voiceCount = 0;
+  const cam = { x: 0, y: 0, s: 1 };
+  let running = false;
+
+  function updateLayers() {
+    const live = voices.filter(v => !v.progress(AC.currentTime).done).length;
+    layersEl.textContent = `${live} ${live === 1 ? 'layer' : 'layers'}`;
+  }
+
+  function addVoice(clientX, clientY, isFirst) {
+    const now = AC.currentTime;
+    const unit = unitMs / 1000;
+    const step = 2 * unit;                                   // eighth-note grid
+    let start;
+    if (isFirst) {
+      start = now + 0.12;
+      gridOrigin = start;
+    } else {
+      start = gridOrigin + Math.ceil((now + 0.04 - gridOrigin) / step) * step;
+    }
+    const wx = cam.x + (clientX - W / 2) / cam.s;
+    const wy = cam.y - (clientY - H / 2) / cam.s;
+    const v = new Voice({
+      start, unit, born: now,
+      ox: isFirst ? 0 : wx,
+      oy: isFirst ? 0 : wy,
+      rot: isFirst ? 0 : Math.random() * Math.PI * 2,
+      // New spirals are sized against the current zoom so their first squares are visible.
+      scale: isFirst ? 1 : (0.022 * Math.min(W, H)) / cam.s,
+      hue: (205 + voiceCount * GOLDEN_ANGLE) % 360,
+      panValue: Math.max(-0.8, Math.min(0.8, (clientX / W - 0.5) * 1.6)),
+    });
+    voiceCount++;
+    voices.push(v);
+    if (!isFirst) ripples.push({ x: clientX, y: clientY, t: performance.now(), hue: v.hue });
+    // Keep the scene bounded: drop the oldest finished voices.
+    while (voices.length > 40) {
+      const idx = voices.findIndex(x => x.finished(now));
+      if (idx < 0) break;
+      voices.splice(idx, 1)[0].kill();
+    }
+    updateLayers();
+  }
+
+  function startPiece() {
+    voices.length = 0;
+    ripples.length = 0;
+    voiceCount = 0;
+    // Initial camera: fit the first seven squares (13 × 21 units) so the quick opening notes
+    // play inside the view and the viewport only starts pulling back once the spiral outgrows it.
+    const b = squareOf(7).box;
+    cam.s = Math.min(W / (b.maxX - b.minX), H / (b.maxY - b.minY)) * 0.72;
+    cam.x = (b.minX + b.maxX) / 2; cam.y = (b.minY + b.maxY) / 2;
+    addVoice(W / 2, H / 2, true);
+    lastEl.textContent = '';
+  }
+
+  function reset() {
+    if (!AC) return;
+    const now = AC.currentTime;
+    master.gain.cancelScheduledValues(now);
+    master.gain.setTargetAtTime(0, now, 0.02);
+    const old = voices.slice();
+    setTimeout(() => {
+      old.forEach(v => v.kill());
+      master.gain.setValueAtTime(0.9, AC.currentTime);
+      startPiece();
+    }, 120);
+  }
+
+  // Look-ahead scheduler: anything starting within the horizon gets handed to Web Audio now.
+  function schedule() {
+    if (!running) return;
+    const now = AC.currentTime, horizon = now + 0.4;
+    for (const v of voices) {
+      while (v.next < NOTE_COUNT && v.notes[v.next].start < horizon) {
+        const n = v.notes[v.next];
+        if (n.start > now - 0.15) playNote(v, v.next, n.start, n.dur);  // skip notes lost to tab throttling
+        v.next++;
+      }
+    }
+  }
+
+  // ---------- Camera ----------
+  function fitTarget(now) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const v of voices) {
+      const p = v.progress(now);
+      // Lead by one square: as the live note progresses, interpolate from the box that holds
+      // the current square to the one that will hold the next.
+      const a = squareOf(p.n).box, b = squareOf(p.n + 1).box, f = p.f;
+      const bx0 = a.minX + (b.minX - a.minX) * f, bx1 = a.maxX + (b.maxX - a.maxX) * f;
+      const by0 = a.minY + (b.minY - a.minY) * f, by1 = a.maxY + (b.maxY - a.maxY) * f;
+      for (const [x, y] of [[bx0, by0], [bx1, by0], [bx0, by1], [bx1, by1]]) {
+        const [wx, wy] = v.toWorld(x, y);
+        if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+        if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+      }
+    }
+    if (!isFinite(minX)) return null;
+    const bw = Math.max(maxX - minX, 1e-6), bh = Math.max(maxY - minY, 1e-6);
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2, s: Math.min(W / bw, H / bh) * 0.78 };
+  }
+
+  function updateCamera(now, dt) {
+    const t = fitTarget(now);
+    if (!t) return;
+    const k = 1 - Math.exp(-dt / 0.35);
+    cam.x += (t.x - cam.x) * k;
+    cam.y += (t.y - cam.y) * k;
+    // Zoom out only, in log space, so the viewport never jitters back in.
+    const target = Math.min(t.s, cam.s);
+    cam.s = Math.exp(Math.log(cam.s) + (Math.log(target) - Math.log(cam.s)) * k);
+  }
+
+  // ---------- Drawing ----------
+  function drawVoice(v, now) {
+    ctx.save();
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(cam.s, -cam.s);
+    ctx.translate(-cam.x, -cam.y);
+    ctx.translate(v.ox, v.oy);
+    ctx.rotate(v.rot);
+    ctx.scale(v.scale, v.scale);
+
+    const k = cam.s * v.scale;              // CSS px per local unit
+    const px = w => w / k;
+    const p = v.progress(now);
+    const fadeIn = Math.min(1, (now - v.born) / 0.4);
+
+    // Squares
+    ctx.lineJoin = 'miter';
+    ctx.lineWidth = px(1);
+    for (let n = 1; n <= p.n; n++) {
+      const q = SQ[n - 1];
+      if (q.s * k < 2) continue;                       // sub-pixel: skip
+      const lit = n <= SEED_SQUARES ? 0 : v.lit(n - SEED_SQUARES - 1, now);
+      ctx.strokeStyle = `hsla(${v.hue}, 40%, 78%, ${(0.07 + 0.22 * lit) * fadeIn})`;
+      ctx.strokeRect(q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0);
+    }
+    // Faint seed arcs in the two unit squares
+    if (k >= 2) {
+      ctx.strokeStyle = `hsla(${v.hue}, 60%, 75%, ${0.25 * fadeIn})`;
+      ctx.lineWidth = px(1.2);
+      for (let n = 1; n <= SEED_SQUARES; n++) {
+        const q = SQ[n - 1];
+        ctx.beginPath(); ctx.arc(q.cx, q.cy, q.s, q.a0, q.a0 + Math.PI / 2); ctx.stroke();
+      }
+    }
+
+    // Arcs
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (let n = SEED_SQUARES + 1; n <= p.n; n++) {
+      const q = SQ[n - 1], i = n - SEED_SQUARES - 1;
+      if (q.s * k < 1) continue;
+      const lit = v.lit(i, now);
+      const current = n === p.n && !p.done;
+      const frac = current ? p.f : 1;
+      const hue = (v.hue + 16 * (i % 4)) % 360;
+      const a1 = q.a0 + (Math.PI / 2) * frac;
+
+      ctx.beginPath(); ctx.arc(q.cx, q.cy, q.s, q.a0, a1);
+      ctx.strokeStyle = `hsla(${hue}, 85%, 66%, ${0.32 + 0.55 * lit})`;
+      ctx.lineWidth = px(2);
+      ctx.stroke();
+
+      if (lit > 0.02) {
+        ctx.strokeStyle = `hsla(${hue}, 90%, 60%, ${0.22 * lit})`;
+        ctx.lineWidth = px(9);
+        ctx.stroke();
+        ctx.strokeStyle = `hsla(${hue}, 90%, 70%, ${0.08 * lit})`;
+        ctx.lineWidth = px(22);
+        ctx.stroke();
+      }
+
+      if (current) {
+        // The part of the arc still to be travelled
+        ctx.beginPath(); ctx.arc(q.cx, q.cy, q.s, a1, q.a0 + Math.PI / 2);
+        ctx.strokeStyle = `hsla(${hue}, 50%, 75%, 0.14)`;
+        ctx.lineWidth = px(1.2);
+        ctx.stroke();
+
+        // Travelling head
+        const hx = q.cx + q.s * Math.cos(a1), hy = q.cy + q.s * Math.sin(a1);
+        const r = px(18);
+        const g = ctx.createRadialGradient(hx, hy, 0, hx, hy, r);
+        g.addColorStop(0, `hsla(${hue}, 90%, 92%, 0.95)`);
+        g.addColorStop(0.25, `hsla(${hue}, 90%, 70%, 0.55)`);
+        g.addColorStop(1, `hsla(${hue}, 90%, 60%, 0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawRipples() {
+    const t = performance.now();
+    for (let i = ripples.length - 1; i >= 0; i--) {
+      const r = ripples[i], age = (t - r.t) / 700;
+      if (age >= 1) { ripples.splice(i, 1); continue; }
+      ctx.beginPath();
+      ctx.arc(r.x, r.y, 6 + age * 60, 0, Math.PI * 2);
+      ctx.strokeStyle = `hsla(${r.hue}, 90%, 75%, ${(1 - age) * 0.7})`;
+      ctx.lineWidth = 2 * (1 - age) + 0.5;
+      ctx.stroke();
+    }
+  }
+
+  let lastFrame = performance.now();
+  let lastHud = 0;
+  function frame(ts) {
+    requestAnimationFrame(frame);
+    const dt = Math.min((ts - lastFrame) / 1000, 0.1);
+    lastFrame = ts;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = bgGradient;
+    ctx.fillRect(0, 0, W, H);
+    if (!running) return;
+
+    const now = AC.currentTime;
+    updateCamera(now, dt);
+    for (const v of voices) drawVoice(v, now);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    drawRipples();
+
+    if (ts - lastHud > 500) { lastHud = ts; updateLayers(); }
+  }
+  requestAnimationFrame(frame);
+
+  // ---------- Interaction ----------
+  function begin() {
+    if (!AC) initAudio();
+    if (AC.state === 'suspended') AC.resume();
+    overlay.classList.add('hidden');
+    running = true;
+    startPiece();
+    setInterval(schedule, 40);
+  }
+  overlay.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    e.stopPropagation();   // the opening tap must not also seed a layer
+    begin();
+  }, { once: true });
+
+  window.addEventListener('pointerdown', e => {
+    if (!running) return;
+    if (e.button !== 0) return;
+    if (e.target.closest('#panel') || e.target.closest('#overlay')) return;
+    if (AC.state === 'suspended') AC.resume();
+    addVoice(e.clientX, e.clientY, false);
+  });
+  window.addEventListener('keydown', e => {
+    if (!running) return;
+    if (e.code === 'Space' && !e.target.closest('#panel')) {
+      e.preventDefault();
+      addVoice(W / 2 + (Math.random() - 0.5) * W * 0.6, H / 2 + (Math.random() - 0.5) * H * 0.6, false);
+    }
+  });
+
+  pulseEl.addEventListener('input', () => {
+    unitMs = +pulseEl.value;
+    pulseOut.textContent = `${unitMs} ms`;
+    if (AC) gridOrigin = AC.currentTime;   // re-anchor the eighth-note grid to the new pulse
+  });
+  resetBtn.addEventListener('click', reset);
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && AC && AC.state === 'suspended') AC.resume();
+  });
+})();
+</script>
+</body>
+</html>
