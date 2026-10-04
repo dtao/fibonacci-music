@@ -35,15 +35,38 @@
     position: fixed; left: 16px; top: max(16px, env(safe-area-inset-top));
     pointer-events: none;
   }
+  #hud .title { display: flex; align-items: center; gap: 10px; }
   #hud h1 {
     margin: 0; font-size: 13px; font-weight: 600;
     letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85;
   }
-  #hud p { margin: 6px 0 0; font-size: 12px; color: var(--muted); max-width: 46ch; line-height: 1.4; }
+  #infoBtn {
+    all: unset; pointer-events: auto; cursor: pointer;
+    width: 20px; height: 20px; border-radius: 50%;
+    display: inline-grid; place-items: center;
+    border: 1px solid rgba(223, 230, 243, 0.35); color: var(--muted);
+    font: italic 600 12px/1 Georgia, "Times New Roman", serif;
+  }
+  #infoBtn:hover, #infoBtn[aria-expanded="true"] { color: var(--fg); border-color: rgba(223, 230, 243, 0.7); }
+  #infoBtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #hud .note {
-    margin-top: 10px; font-variant-numeric: tabular-nums;
+    margin-top: 8px; font-variant-numeric: tabular-nums;
     font-size: 12px; color: var(--muted);
   }
+  #info {
+    position: fixed; left: 16px; top: calc(max(16px, env(safe-area-inset-top)) + 54px);
+    width: min(340px, calc(100vw - 32px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    padding: 12px 14px; font-size: 12px; line-height: 1.45; color: var(--muted);
+  }
+  #info[hidden] { display: none; }
+  #info p { margin: 0 0 8px; }
+  #info p:last-child { margin-bottom: 0; }
+  #info b { color: var(--fg); font-weight: 600; }
+  #info ul { margin: 0 0 8px; padding: 0; list-style: none; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+  #info li { display: contents; }
+  #info li span:first-child { color: var(--fg); font-weight: 600; }
   #hud .note b { color: var(--fg); font-weight: 600; }
 
   #panel {
@@ -51,7 +74,9 @@
     bottom: max(16px, env(safe-area-inset-bottom));
     display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
     font-size: 12px;
+    pointer-events: none;            /* taps in the gaps between controls reach the canvas */
   }
+  #panel > * { pointer-events: auto; }
   #panel .box {
     display: flex; gap: 10px; align-items: center;
     background: var(--panel); border: 1px solid var(--line);
@@ -98,12 +123,20 @@
 <body>
 <canvas id="stage" aria-label="Fibonacci spiral visualization"></canvas>
 
-<div id="hud" aria-live="polite">
-  <h1>Fibonacci Cascade</h1>
-  <p>Arpeggios climbing through the octaves. Each note lasts a Fibonacci number of pulses: 2, 3, 5, 8, 13 … and fades as it rises.</p>
-  <p>Tap to seed a new layer, snapped to the sixteenth-note grid. Where you tap picks the arpeggio: C · E · G · B on one side, A · C · E · A · B in the middle, F · A · C · E · G · B on the other.</p>
-  <p>Beat mode adds a kick and snare at a tempo set by the pulse, and locks new layers to the beat.</p>
-  <div class="note"><span id="layers">0 layers</span><span id="last"></span></div>
+<div id="hud">
+  <div class="title">
+    <h1>Fibonacci Cascade</h1>
+    <button id="infoBtn" type="button" aria-label="About this piece" aria-expanded="false" aria-controls="info">i</button>
+  </div>
+  <div class="note" aria-live="polite"><span id="layers">0 layers</span><span id="last"></span></div>
+</div>
+
+<div id="info" role="dialog" aria-label="About Fibonacci Cascade" hidden>
+  <p>Arpeggios climb through the octaves. Each note lasts a Fibonacci number of pulses, 2, 3, 5, 8, 13 and so on, and fades as it rises. Each layer traces its own Fibonacci spiral, lighting the arc of the note it is playing.</p>
+  <p>Tap to seed a new layer, snapped to the sixteenth-note grid. The screen is split into seven faint bands, one for each note of C major, and the band you tap picks the arpeggio:</p>
+  <ul id="patternList"></ul>
+  <p><b>Beat</b> adds a kick and snare at a tempo set by the pulse, and locks new layers to the beat. At most 96 layers play at once; the oldest fade away to make room.</p>
+  <p>Keys: 1 to 7 seed a band, space picks one at random, B toggles the beat.</p>
 </div>
 
 <div id="panel">
@@ -124,7 +157,7 @@
   <div class="card">
     <h2>Fibonacci Cascade</h2>
     <p>A Cmaj7 arpeggio whose rhythm grows along the Fibonacci sequence, traced as a spiral of golden squares.</p>
-    <p>Sound on. Then tap the screen to layer new spirals: one side climbs C · E · G · B, the middle A · C · E · A · B, the other side F · A · C · E · G · B.</p>
+    <p>Sound on. Then tap the screen to layer new spirals. Each of the seven faint bands climbs a different arpeggio of C major.</p>
     <span class="cta">Tap to begin</span>
   </div>
 </div>
@@ -137,17 +170,22 @@
   const FIB = [0, 1];
   for (let i = 2; i < 48; i++) FIB[i] = FIB[i - 1] + FIB[i - 2];
 
-  const NOTE_COUNT = 16;                          // four octaves of C E G B
+  const NOTE_COUNT = 16;                          // notes per layer
   const SEED_SQUARES = 2;                         // the two unit squares at the heart of the spiral
   const SQUARE_COUNT = NOTE_COUNT + SEED_SQUARES + 2; // a couple extra for camera look-ahead
   const C3 = 48;                                  // MIDI number of the lowest note
   const PITCH_NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-  // Three arpeggios, as semitone offsets above C3. Each cycle repeats one octave higher.
-  // Tapping in one of three invisible zones picks which one a new layer climbs.
+  // One arpeggio per degree of C major, as semitone offsets above C3. Each is a stack of
+  // thirds from its root, sometimes with a colour tone on top, and every note stays in the
+  // key. Each cycle repeats one octave higher. The band you tap picks the arpeggio.
   const PATTERNS = [
-    { label: 'C · E · G · B',         steps: [0, 4, 7, 11],          hue: 205 },
-    { label: 'A · C · E · A · B',     steps: [9, 12, 16, 21, 23],    hue: 28 },
-    { label: 'F · A · C · E · G · B', steps: [5, 9, 12, 16, 19, 23], hue: 300 },
+    { root: 'C', label: 'C · E · G · B',         steps: [0, 4, 7, 11],           hue: 205 }, // Cmaj7
+    { root: 'D', label: 'D · F · A · C · E',     steps: [2, 5, 9, 12, 16],       hue: 236 }, // Dm9
+    { root: 'E', label: 'E · G · B · D · A',     steps: [4, 7, 11, 14, 21],      hue: 268 }, // Em7 add 11
+    { root: 'F', label: 'F · A · C · E · G · B', steps: [5, 9, 12, 16, 19, 23],  hue: 300 }, // Fmaj9 ♯11
+    { root: 'G', label: 'G · B · D · F · A',     steps: [7, 11, 14, 17, 21],     hue: 344 }, // G9
+    { root: 'A', label: 'A · C · E · A · B',     steps: [9, 12, 16, 21, 23],     hue: 28 },  // Am add 9
+    { root: 'B', label: 'B · D · F · A · E',     steps: [11, 14, 17, 21, 28],    hue: 80 },  // Bm7♭5 add 11
   ];
   const PEAK = 0.3;                               // gain of the very first note
   const GAIN_DECAY = 0.78;                        // per-note gain multiplier (≈ -8.6 dB per octave)
@@ -418,11 +456,39 @@
     layersEl.textContent = `${live} ${live === 1 ? 'layer' : 'layers'}`;
   }
 
-  // Three equal, invisible zones along the longer axis of the screen:
-  // left / middle / right in landscape, top / middle / bottom in portrait.
+  // Seven equal bands along the longer axis of the screen: left to right in landscape,
+  // top to bottom in portrait.
+  // In portrait the bands stop just above the control panel so the last one is fully tappable.
+  function zoneSpan() {
+    if (W >= H) return W;
+    const top = document.getElementById('panel').getBoundingClientRect().top;
+    return Math.max(H * 0.6, top - 10);
+  }
   function zoneAt(clientX, clientY) {
-    const t = W >= H ? clientX / W : clientY / H;
+    const t = W >= H ? clientX / W : clientY / zoneSpan();
     return Math.min(PATTERNS.length - 1, Math.max(0, Math.floor(t * PATTERNS.length)));
+  }
+  function zoneRect(i) {
+    const n = PATTERNS.length, span = zoneSpan();
+    if (W >= H) { const w = span / n; return { x: i * w, y: 0, w, h: H }; }
+    const h = span / n; return { x: 0, y: i * h, w: W, h };
+  }
+  const zoneFlash = PATTERNS.map(() => -1e9);    // performance.now() of the last tap in each band
+
+  function drawZones() {
+    const landscape = W >= H, t = performance.now();
+    ctx.font = '600 11px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    PATTERNS.forEach((pat, i) => {
+      const r = zoneRect(i);
+      const flash = Math.exp(-(t - zoneFlash[i]) / 450);
+      ctx.fillStyle = `hsla(${pat.hue}, 75%, 68%, ${0.05 + 0.07 * flash})`;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      // A faint letter names the band: along the bottom in landscape, the right edge in portrait.
+      ctx.fillStyle = `hsla(${pat.hue}, 60%, 80%, ${0.28 + 0.4 * flash})`;
+      if (landscape) ctx.fillText(pat.root, r.x + r.w / 2, H - 92);
+      else ctx.fillText(pat.root, W - 18, r.y + r.h / 2);
+    });
   }
 
   function addVoice(clientX, clientY, isFirst, patternIndex = zoneAt(clientX, clientY)) {
@@ -454,7 +520,10 @@
     });
     voiceCount++;
     voices.push(v);
-    if (!isFirst) ripples.push({ x: clientX, y: clientY, t: performance.now(), hue: v.hue });
+    if (!isFirst) {
+      ripples.push({ x: clientX, y: clientY, t: performance.now(), hue: v.hue });
+      zoneFlash[patternIndex] = performance.now();
+    }
     enforceLimits(now);
     updateLayers();
   }
@@ -694,6 +763,7 @@
     ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, W, H);
     if (!running) return;
+    drawZones();
 
     const now = AC.currentTime;
     while (beatEvents.length && beatEvents[0].t <= now) {
@@ -742,19 +812,25 @@
   window.addEventListener('pointerdown', e => {
     if (!running) return;
     if (e.button !== 0) return;
-    if (e.target.closest('#panel') || e.target.closest('#overlay')) return;
+    if (e.target.closest('#panel') || e.target.closest('#overlay') || e.target.closest('#infoBtn')) return;
+    if (e.target.closest('#info')) return;
+    if (!infoEl.hidden) { setInfo(false); return; }   // a tap outside the popover just closes it
     if (AC.state === 'suspended') AC.resume();
     addVoice(e.clientX, e.clientY, false);
   });
   window.addEventListener('keydown', e => {
     if (!running) return;
-    if (e.target.closest('#panel')) return;
+    if (e.code === 'Escape') { setInfo(false); return; }
+    if (e.target.closest('#panel') || e.target.closest('#hud')) return;
     if (e.code === 'KeyB') { beatEl.checked = !beatEl.checked; setBeat(beatEl.checked); return; }
-    const digit = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
-    if (e.code === 'Space' || digit >= 0) {
+    const digit = e.code.startsWith('Digit') ? +e.code.slice(5) - 1 : -1;
+    if (e.code === 'Space' || (digit >= 0 && digit < PATTERNS.length)) {
       e.preventDefault();
       const idx = digit >= 0 ? digit : Math.floor(Math.random() * PATTERNS.length);
-      addVoice(W / 2 + (Math.random() - 0.5) * W * 0.6, H / 2 + (Math.random() - 0.5) * H * 0.6, false, idx);
+      // Seed somewhere inside that band, away from the edges.
+      const r = zoneRect(idx);
+      const x = r.x + r.w * (0.2 + 0.6 * Math.random()), y = r.y + r.h * (0.2 + 0.6 * Math.random());
+      addVoice(x, y, false, idx);
     }
   });
 
@@ -775,6 +851,16 @@
   pulseOut.textContent = bpmText();
   beatEl.addEventListener('change', () => setBeat(beatEl.checked));
   resetBtn.addEventListener('click', reset);
+
+  const infoEl = document.getElementById('info');
+  const infoBtn = document.getElementById('infoBtn');
+  document.getElementById('patternList').innerHTML = PATTERNS
+    .map(p => `<li><span>${p.root}</span><span>${p.label}</span></li>`).join('');
+  function setInfo(open) {
+    infoEl.hidden = !open;
+    infoBtn.setAttribute('aria-expanded', String(open));
+  }
+  infoBtn.addEventListener('click', () => setInfo(infoEl.hidden));
 
   // Read-only handle for inspection from the console.
   window.fibonacciCascade = { voices, PATTERNS, zoneAt, MAX_ACTIVE, beat: () => ({ on: beatOn, origin: gridOrigin, len: beatLen(), next: beatNext, phase: beatPhase }) };
