@@ -61,6 +61,14 @@
   #panel label { color: var(--muted); white-space: nowrap; }
   #panel output { min-width: 5.5ch; font-variant-numeric: tabular-nums; }
   #panel input[type=range] { width: 120px; accent-color: var(--accent); }
+  #panel input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  #panel .check { cursor: pointer; color: var(--fg); }
+  #panel .dots { display: inline-flex; gap: 5px; margin-left: 4px; }
+  #panel .dots i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: rgba(223, 230, 243, 0.22); transition: background 80ms, box-shadow 80ms;
+  }
+  #panel .dots i.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
   #panel button {
     all: unset; cursor: pointer; padding: 8px 14px; border-radius: 999px;
     background: var(--panel); border: 1px solid var(--line); color: var(--fg);
@@ -93,7 +101,8 @@
 <div id="hud" aria-live="polite">
   <h1>Fibonacci Cascade</h1>
   <p>Arpeggios climbing through the octaves. Each note lasts a Fibonacci number of pulses: 2, 3, 5, 8, 13 … and fades as it rises.</p>
-  <p>Tap to seed a new layer, snapped to the eighth-note grid. Where you tap picks the arpeggio: C · E · G · B on one side, A · C · E · A · B in the middle, F · A · C · E · G · B on the other.</p>
+  <p>Tap to seed a new layer, snapped to the sixteenth-note grid. Where you tap picks the arpeggio: C · E · G · B on one side, A · C · E · A · B in the middle, F · A · C · E · G · B on the other.</p>
+  <p>Beat mode adds a kick and snare at a tempo set by the pulse, and locks new layers to the beat.</p>
   <div class="note"><span id="layers">0 layers</span><span id="last"></span></div>
 </div>
 
@@ -101,8 +110,13 @@
   <div class="box">
     <label for="pulse">pulse</label>
     <input id="pulse" type="range" min="28" max="110" step="1" value="50" aria-label="Pulse length in milliseconds">
-    <output id="pulseOut" for="pulse">50 ms</output>
+    <output id="pulseOut" for="pulse">50 ms · 150 bpm</output>
   </div>
+  <label class="box check">
+    <input id="beat" type="checkbox" aria-label="Beat mode: kick and snare, new layers locked to the beat">
+    beat
+    <span class="dots" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+  </label>
   <button id="reset" type="button">Reset</button>
 </div>
 
@@ -138,6 +152,9 @@
   const PEAK = 0.3;                               // gain of the very first note
   const GAIN_DECAY = 0.78;                        // per-note gain multiplier (≈ -8.6 dB per octave)
   const GOLDEN_ANGLE = 137.50776;
+  const TAP_PULSES = 2;                           // free taps snap to a sixteenth (two pulses)
+  const BEAT_PULSES = 8;                          // a beat is eight pulses, so 50 ms → 150 bpm
+  const BEATS_PER_BAR = 4;
 
   // Note i lasts FIB[i + 3] pulses: 2, 3, 5, 8, 13 ...
   const DUR = Array.from({ length: NOTE_COUNT }, (_, i) => FIB[i + 3]);
@@ -178,6 +195,8 @@
   const pulseEl = document.getElementById('pulse');
   const pulseOut = document.getElementById('pulseOut');
   const resetBtn = document.getElementById('reset');
+  const beatEl = document.getElementById('beat');
+  const dotEls = Array.from(document.querySelectorAll('#panel .dots i'));
 
   let W = 0, H = 0, dpr = 1, bgGradient = null;
   function resize() {
@@ -192,7 +211,7 @@
   resize();
 
   // ---------- Audio ----------
-  let AC = null, master = null, reverbSend = null;
+  let AC = null, master = null, reverbSend = null, drumBus = null, noiseBuf = null;
 
   function makeImpulse(seconds, decay) {
     const rate = AC.sampleRate, len = Math.floor(rate * seconds);
@@ -218,6 +237,58 @@
     reverb.buffer = makeImpulse(3.2, 2.6);
     reverbSend = AC.createGain(); reverbSend.gain.value = 0.4;
     reverbSend.connect(reverb).connect(comp);
+
+    drumBus = AC.createGain(); drumBus.gain.value = 0.5;
+    drumBus.connect(master);
+    noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
+    const nd = noiseBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  }
+
+  // ---------- Drums ----------
+  let drumSources = [];
+  function trackDrum(...nodes) {
+    drumSources.push(...nodes);
+    nodes[0].onended = () => { drumSources = drumSources.filter(n => !nodes.includes(n)); };
+  }
+
+  function playKick(t) {
+    const o = AC.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(165, t);
+    o.frequency.exponentialRampToValueAtTime(42, t + 0.09);
+    const g = AC.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(1, t + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+    o.connect(g).connect(drumBus);
+    o.start(t); o.stop(t + 0.32);
+    trackDrum(o);
+  }
+
+  function playSnare(t) {
+    const noise = AC.createBufferSource(); noise.buffer = noiseBuf;
+    const hp = AC.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 700;
+    const bp = AC.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 2400; bp.Q.value = 0.5;
+    const g = AC.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.7, t + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
+    noise.connect(hp).connect(bp).connect(g).connect(drumBus);
+    const send = AC.createGain(); send.gain.value = 0.3;
+    g.connect(send).connect(reverbSend);
+
+    const body = AC.createOscillator(); body.type = 'triangle';
+    body.frequency.setValueAtTime(230, t);
+    body.frequency.exponentialRampToValueAtTime(150, t + 0.06);
+    const gb = AC.createGain();
+    gb.gain.setValueAtTime(0.0001, t);
+    gb.gain.linearRampToValueAtTime(0.45, t + 0.003);
+    gb.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    body.connect(gb).connect(drumBus);
+
+    noise.start(t); noise.stop(t + 0.2);
+    body.start(t); body.stop(t + 0.12);
+    trackDrum(noise, body);
   }
 
   function noteMidi(pattern, i) {
@@ -308,7 +379,13 @@
   const voices = [];
   const ripples = [];
   let unitMs = +pulseEl.value;
-  let gridOrigin = 0;
+  let gridOrigin = 0;          // audio time of beat 0; the tap grid and the drums both hang off it
+  let beatOn = false;
+  let beatNext = 0;            // index of the next beat to schedule, counted from gridOrigin
+  let beatPhase = 0;           // bar position of beat 0, so re-anchoring keeps the snare on 2 and 4
+  const beatEvents = [];       // scheduled beats waiting to be reflected visually
+  let lastKick = -10, lastSnare = -10, barPos = -1;
+  const beatLen = () => BEAT_PULSES * unitMs / 1000;
   let voiceCount = 0;
   const cam = { x: 0, y: 0, s: 1 };
   let running = false;
@@ -329,11 +406,13 @@
     const now = AC.currentTime;
     const pattern = PATTERNS[isFirst ? 0 : patternIndex];
     const unit = unitMs / 1000;
-    const step = 2 * unit;                                   // eighth-note grid
+    // Free taps snap to the sixteenth grid; in beat mode they wait for the next beat.
+    const step = (beatOn ? BEAT_PULSES : TAP_PULSES) * unit;
     let start;
     if (isFirst) {
       start = now + 0.12;
       gridOrigin = start;
+      beatNext = 0; beatPhase = 0;
     } else {
       start = gridOrigin + Math.ceil((now + 0.04 - gridOrigin) / step) * step;
     }
@@ -383,6 +462,8 @@
     const old = voices.slice();
     setTimeout(() => {
       old.forEach(v => v.kill());
+      for (const n of drumSources) { try { n.stop(); } catch (e) { /* already stopped */ } }
+      drumSources = []; beatEvents.length = 0;
       master.gain.setValueAtTime(0.9, AC.currentTime);
       startPiece();
     }, 120);
@@ -397,6 +478,33 @@
         const n = v.notes[v.next];
         if (n.start > now - 0.15) playNote(v, v.next, n.start, n.dur);  // skip notes lost to tab throttling
         v.next++;
+      }
+    }
+    if (beatOn) {
+      const len = beatLen();
+      while (gridOrigin + beatNext * len < horizon) {
+        const t = gridOrigin + beatNext * len;
+        const pos = (beatNext + beatPhase) % BEATS_PER_BAR;
+        if (t > now - 0.15) {
+          playKick(t);
+          if (pos === 1 || pos === 3) playSnare(t);
+          beatEvents.push({ t, pos });
+        }
+        beatNext++;
+      }
+    }
+  }
+
+  function setBeat(on) {
+    beatOn = on;
+    if (AC && running) {
+      if (on) {
+        // Pick up on the next beat of the existing grid, keeping bar position.
+        beatNext = Math.max(0, Math.ceil((AC.currentTime + 0.02 - gridOrigin) / beatLen()));
+      } else {
+        beatEvents.length = 0;
+        barPos = -1;
+        dotEls.forEach(d => d.classList.remove('on'));
       }
     }
   }
@@ -542,6 +650,23 @@
     if (!running) return;
 
     const now = AC.currentTime;
+    while (beatEvents.length && beatEvents[0].t <= now) {
+      const e = beatEvents.shift();
+      lastKick = e.t;
+      if (e.pos % 2 === 1) lastSnare = e.t;
+      if (e.pos !== barPos) {
+        barPos = e.pos;
+        dotEls.forEach((d, i) => d.classList.toggle('on', i === barPos));
+      }
+    }
+    if (beatOn) {
+      // A soft flash on the kick and a brighter, shorter one on the snare.
+      const k = Math.exp(-(now - lastKick) / 0.14), sn = Math.exp(-(now - lastSnare) / 0.09);
+      ctx.fillStyle = `rgba(143, 184, 255, ${0.08 * k})`;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.05 * sn})`;
+      ctx.fillRect(0, 0, W, H);
+    }
     updateCamera(now, dt);
     for (const v of voices) drawVoice(v, now);
 
@@ -578,6 +703,7 @@
   window.addEventListener('keydown', e => {
     if (!running) return;
     if (e.target.closest('#panel')) return;
+    if (e.code === 'KeyB') { beatEl.checked = !beatEl.checked; setBeat(beatEl.checked); return; }
     const digit = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
     if (e.code === 'Space' || digit >= 0) {
       e.preventDefault();
@@ -586,15 +712,26 @@
     }
   });
 
+  function bpmText() { return `${unitMs} ms · ${Math.round(60000 / (BEAT_PULSES * unitMs))} bpm`; }
   pulseEl.addEventListener('input', () => {
+    if (AC && running && beatOn) {
+      // Re-anchor the grid at the next unscheduled beat so the drums carry straight on at the new tempo.
+      const tNext = gridOrigin + beatNext * beatLen();
+      beatPhase = (beatPhase + beatNext) % BEATS_PER_BAR;
+      gridOrigin = Math.max(tNext, AC.currentTime);
+      beatNext = 0;
+    } else if (AC) {
+      gridOrigin = AC.currentTime;           // re-anchor the tap grid to the new pulse
+    }
     unitMs = +pulseEl.value;
-    pulseOut.textContent = `${unitMs} ms`;
-    if (AC) gridOrigin = AC.currentTime;   // re-anchor the eighth-note grid to the new pulse
+    pulseOut.textContent = bpmText();
   });
+  pulseOut.textContent = bpmText();
+  beatEl.addEventListener('change', () => setBeat(beatEl.checked));
   resetBtn.addEventListener('click', reset);
 
   // Read-only handle for inspection from the console.
-  window.fibonacciCascade = { voices, PATTERNS, zoneAt };
+  window.fibonacciCascade = { voices, PATTERNS, zoneAt, beat: () => ({ on: beatOn, origin: gridOrigin, len: beatLen(), next: beatNext, phase: beatPhase }) };
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && AC && AC.state === 'suspended') AC.resume();
