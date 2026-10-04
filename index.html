@@ -155,6 +155,9 @@
   const TAP_PULSES = 2;                           // free taps snap to a sixteenth (two pulses)
   const BEAT_PULSES = 16;                         // a beat is sixteen pulses, so 50 ms → 75 bpm
   const BEATS_PER_BAR = 4;
+  const MAX_ACTIVE = 96;                          // most layers allowed to play at once
+  const RETIRE_FADE = 3;                          // seconds an over-limit layer takes to fade away
+  const RETIRE_STAGGER = 0.3;                     // spacing between retirements when several go at once
 
   // Note i lasts FIB[i + 3] pulses: 2, 3, 5, 8, 13 ...
   const DUR = Array.from({ length: NOTE_COUNT }, (_, i) => FIB[i + 3]);
@@ -321,7 +324,7 @@
 
     o1.connect(env);
     o2.connect(g2).connect(lp).connect(env);
-    env.connect(voice.pan);
+    env.connect(voice.out);
 
     o1.start(t); o2.start(t);
     o1.stop(t + ring); o2.stop(t + ring);
@@ -345,6 +348,9 @@
       if (this.pan.pan) this.pan.pan.value = this.panValue;
       this.pan.connect(master);
       this.pan.connect(reverbSend);
+      this.out = AC.createGain();        // per-layer volume, used to fade the layer out when retired
+      this.out.connect(this.pan);
+      this.retireAt = null;              // audio time the fade-out begins, once retired
       this.cos = Math.cos(this.rot); this.sin = Math.sin(this.rot);
     }
     // Which square is live right now, and how far through it we are.
@@ -369,6 +375,22 @@
               this.oy + this.scale * (x * this.sin + y * this.cos)];
     }
     finished(now) { return now > this.end + 6; }
+    // Begin a smooth exit at audio time `at`: no new notes after it, and the layer's
+    // volume glides to silence over RETIRE_FADE seconds while its spiral fades with it.
+    retire(at) {
+      if (this.retireAt !== null) return;
+      this.retireAt = at;
+      this.out.gain.setValueAtTime(1, at);
+      this.out.gain.setTargetAtTime(0, at, RETIRE_FADE / 5);   // about -43 dB by the end
+    }
+    // 1 while playing normally, easing to 0 across the retirement fade.
+    visibility(now) {
+      if (this.retireAt === null || now <= this.retireAt) return 1;
+      const x = Math.min(1, (now - this.retireAt) / RETIRE_FADE);
+      return 0.5 * (1 + Math.cos(Math.PI * x));
+    }
+    retired(now) { return this.retireAt !== null && now >= this.retireAt + RETIRE_FADE; }
+    isActive(now) { return this.retireAt === null && !this.progress(now).done; }
     kill() {
       for (const s of this.sources) { try { s.stop(); } catch (e) { /* already stopped */ } }
       this.sources = [];
@@ -391,7 +413,8 @@
   let running = false;
 
   function updateLayers() {
-    const live = voices.filter(v => !v.progress(AC.currentTime).done).length;
+    const now = AC.currentTime;
+    const live = voices.filter(v => v.isActive(now)).length;
     layersEl.textContent = `${live} ${live === 1 ? 'layer' : 'layers'}`;
   }
 
@@ -432,13 +455,31 @@
     voiceCount++;
     voices.push(v);
     if (!isFirst) ripples.push({ x: clientX, y: clientY, t: performance.now(), hue: v.hue });
-    // Keep the scene bounded: drop the oldest finished voices.
-    while (voices.length > 40) {
-      const idx = voices.findIndex(x => x.finished(now));
-      if (idx < 0) break;
-      voices.splice(idx, 1)[0].kill();
-    }
+    enforceLimits(now);
     updateLayers();
+  }
+
+  // Keep the layer count bounded without anything cutting out abruptly.
+  function enforceLimits(now) {
+    // Over the cap: retire the oldest active layers. They are the quietest by construction,
+    // and when several must go at once their fades are staggered.
+    const active = voices.filter(v => v.isActive(now));
+    let k = 0;
+    for (let i = 0; i < active.length - MAX_ACTIVE; i++) active[i].retire(now + RETIRE_STAGGER * k++);
+    // Keep the scene bounded: once there are more than 40 layers on screen, fade out
+    // layers that finished playing a while ago.
+    let shown = voices.filter(v => v.retireAt === null).length;
+    for (const v of voices) {
+      if (shown <= 40) break;
+      if (v.retireAt === null && v.finished(now)) { v.retire(now); shown--; }
+    }
+  }
+
+  // Free layers whose fade-out has completed.
+  function sweepRetired(now) {
+    for (let i = voices.length - 1; i >= 0; i--) {
+      if (voices[i].retired(now)) voices.splice(i, 1)[0].kill();
+    }
   }
 
   function startPiece() {
@@ -473,9 +514,11 @@
   function schedule() {
     if (!running) return;
     const now = AC.currentTime, horizon = now + 0.4;
+    sweepRetired(now);
     for (const v of voices) {
       while (v.next < NOTE_COUNT && v.notes[v.next].start < horizon) {
         const n = v.notes[v.next];
+        if (v.retireAt !== null && n.start >= v.retireAt) { v.next = NOTE_COUNT; break; }
         if (n.start > now - 0.15) playNote(v, v.next, n.start, n.dur);  // skip notes lost to tab throttling
         v.next++;
       }
@@ -543,7 +586,10 @@
 
   // ---------- Drawing ----------
   function drawVoice(v, now) {
+    const vis = v.visibility(now);
+    if (vis <= 0.002) return;
     ctx.save();
+    ctx.globalAlpha = vis;
     ctx.translate(W / 2, H / 2);
     ctx.scale(cam.s, -cam.s);
     ctx.translate(-cam.x, -cam.y);
@@ -731,7 +777,7 @@
   resetBtn.addEventListener('click', reset);
 
   // Read-only handle for inspection from the console.
-  window.fibonacciCascade = { voices, PATTERNS, zoneAt, beat: () => ({ on: beatOn, origin: gridOrigin, len: beatLen(), next: beatNext, phase: beatPhase }) };
+  window.fibonacciCascade = { voices, PATTERNS, zoneAt, MAX_ACTIVE, beat: () => ({ on: beatOn, origin: gridOrigin, len: beatLen(), next: beatNext, phase: beatPhase }) };
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && AC && AC.state === 'suspended') AC.resume();

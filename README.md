@@ -36,3 +36,7 @@ No build step and no dependencies.
 - The **pulse** slider sets the length of one pulse for new layers. A beat is sixteen pulses, so the readout also shows the tempo in BPM (50 ms is 75 BPM).
 - **beat** adds a kick on every beat and a snare on 2 and 4 at that tempo. While it is on, new layers wait for the next beat, so their first note always lands on the beat even if you tap between beats. The four dots show the bar position. The B key toggles it.
 - **Reset** clears all layers and starts over.
+
+At most 96 layers play at once. When a new layer would go over that limit, the oldest
+active layer is retired: it plays no further notes, and its volume and spiral fade out
+together over three seconds. The oldest layer is always the quietest, so nothing cuts out.
