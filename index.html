@@ -110,7 +110,7 @@
   <div class="box">
     <label for="pulse">pulse</label>
     <input id="pulse" type="range" min="28" max="110" step="1" value="50" aria-label="Pulse length in milliseconds">
-    <output id="pulseOut" for="pulse">50 ms · 150 bpm</output>
+    <output id="pulseOut" for="pulse">50 ms · 75 bpm</output>
   </div>
   <label class="box check">
     <input id="beat" type="checkbox" aria-label="Beat mode: kick and snare, new layers locked to the beat">
@@ -153,7 +153,7 @@
   const GAIN_DECAY = 0.78;                        // per-note gain multiplier (≈ -8.6 dB per octave)
   const GOLDEN_ANGLE = 137.50776;
   const TAP_PULSES = 2;                           // free taps snap to a sixteenth (two pulses)
-  const BEAT_PULSES = 8;                          // a beat is eight pulses, so 50 ms → 150 bpm
+  const BEAT_PULSES = 16;                         // a beat is sixteen pulses, so 50 ms → 75 bpm
   const BEATS_PER_BAR = 4;
 
   // Note i lasts FIB[i + 3] pulses: 2, 3, 5, 8, 13 ...
